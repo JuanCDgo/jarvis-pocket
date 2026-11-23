@@ -3,8 +3,24 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+
+// Refresh Windows User PATH so newly installed winget tools (yt-dlp, ffmpeg, deno) are found immediately
+if (process.platform === 'win32') {
+  try {
+    const userPath = execFileSync(
+      'powershell.exe',
+      ['-NoProfile', '-Command', "[Environment]::GetEnvironmentVariable('Path','User')"],
+      { encoding: 'utf-8', timeout: 3000, windowsHide: true },
+    ).trim();
+    if (userPath) {
+      process.env.PATH = `${userPath};${process.env.PATH || ''}`;
+    }
+  } catch {
+    // Ignore PATH refresh errors
+  }
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
