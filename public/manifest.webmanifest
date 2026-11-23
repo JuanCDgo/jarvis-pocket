@@ -1,0 +1,17 @@
+{
+  "name": "Jarvis Pocket",
+  "short_name": "Jarvis",
+  "description": "Centro de comando híbrido 24/7 para tu PC Windows y tu celular",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#090d16",
+  "theme_color": "#090d16",
+  "icons": [
+    {
+      "src": "./jarvis-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
