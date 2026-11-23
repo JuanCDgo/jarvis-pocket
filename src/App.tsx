@@ -285,7 +285,7 @@ export default function App() {
       mode: mediaMode,
       quality: mediaQuality,
       destination: mediaDest,
-      engine: mediaDest === 'device' ? 'cobalt' : settings.cobaltUrl ? 'cobalt' : 'yt-dlp',
+      engine: mediaDest === 'device' ? 'cobalt' : 'yt-dlp',
       status: 'running',
       progress: mediaDest === 'device' ? 'Consultando Cobalt 24/7...' : 'Enviando al Windows Agent...',
       createdAt: new Date().toISOString(),
