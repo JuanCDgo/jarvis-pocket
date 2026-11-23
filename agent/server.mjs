@@ -447,6 +447,26 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 200, { ok: out.ok, message: out.ok ? 'Apagado cancelado.' : out.stderr });
         return;
       }
+      if (body.action === 'lock') {
+        const out = await runExecFile('rundll32.exe', ['user32.dll,LockWorkStation'], 5000);
+        sendJson(res, out.ok ? 200 : 500, { ok: out.ok, message: out.ok ? 'Pantalla bloqueada.' : out.stderr });
+        return;
+      }
+      if (body.action === 'sleep') {
+        sendJson(res, 200, { ok: true, message: 'Suspendiendo PC...' });
+        setTimeout(() => {
+          void runExecFile(
+            'powershell.exe',
+            [
+              '-NoProfile',
+              '-Command',
+              "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)",
+            ],
+            8000,
+          );
+        }, 400);
+        return;
+      }
       const minutes = Math.min(480, Math.max(1, Math.round(Number(body.minutes) || 15)));
       const flag = body.action === 'restart' ? '/r' : '/s';
       const out = await runExecFile('shutdown', [flag, '/t', String(minutes * 60)], 5000);
@@ -454,6 +474,71 @@ const server = http.createServer(async (req, res) => {
         ok: out.ok,
         message: out.ok ? `${body.action === 'restart' ? 'Reinicio' : 'Apagado'} programado en ${minutes} min.` : out.stderr,
       });
+      return;
+    }
+
+    if (pathname === '/api/media' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      const MEDIA_VK = {
+        mute: 0xad,
+        vol_down: 0xae,
+        vol_up: 0xaf,
+        next: 0xb0,
+        prev: 0xb1,
+        play_pause: 0xb3,
+      };
+      const action = String(body.action || '');
+      const vk = MEDIA_VK[action];
+      if (!vk) {
+        sendJson(res, 400, { ok: false, error: 'Acción multimedia inválida.' });
+        return;
+      }
+      const repeats = action === 'vol_up' || action === 'vol_down' ? 2 : 1;
+      const ps = `
+Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public class Kbd { [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo); }'
+for ($i = 0; $i -lt ${repeats}; $i++) { [Kbd]::keybd_event(${vk}, 0, 0, 0); [Kbd]::keybd_event(${vk}, 0, 2, 0) }
+`;
+      const out = await runExecFile('powershell.exe', ['-NoProfile', '-Command', ps], 6000);
+      sendJson(res, out.ok ? 200 : 500, { ok: out.ok, action, error: out.ok ? undefined : out.stderr });
+      return;
+    }
+
+    if (pathname === '/api/url/open' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      const targetUrl = String(body.url || '').trim();
+      if (!isValidHttpUrl(targetUrl)) {
+        sendJson(res, 400, { ok: false, error: 'URL inválida (debe iniciar con http:// o https://).' });
+        return;
+      }
+      spawn('rundll32.exe', ['url.dll,FileProtocolHandler', targetUrl], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      }).unref();
+      sendJson(res, 200, { ok: true, url: targetUrl });
+      return;
+    }
+
+    if (pathname === '/api/notes/sync' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      const incoming = Array.isArray(body.notes) ? body.notes : [];
+      const notesFile = path.join(config.dropDir, 'jarvis-notas.md');
+      const existing = fs.existsSync(notesFile) ? fs.readFileSync(notesFile, 'utf-8') : '# Notas de Jarvis Pocket\n';
+      let appended = '';
+      const syncedIds = [];
+      for (const n of incoming.slice(0, 100)) {
+        const id = String(n?.id || '').replace(/[^a-zA-Z0-9_-]/g, '');
+        const text = String(n?.text || '').trim().slice(0, 4000);
+        if (!id || !text) continue;
+        syncedIds.push(id);
+        if (existing.includes(`<!-- id:${id} -->`)) continue;
+        const when = String(n?.createdAt || new Date().toISOString()).slice(0, 19).replace('T', ' ');
+        appended += `\n## ${when} <!-- id:${id} -->\n${text}\n`;
+      }
+      if (appended || !fs.existsSync(notesFile)) {
+        fs.writeFileSync(notesFile, existing + appended, 'utf-8');
+      }
+      sendJson(res, 200, { ok: true, syncedIds, file: 'jarvis-notas.md', count: syncedIds.length });
       return;
     }
 

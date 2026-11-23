@@ -19,6 +19,15 @@ import {
   Play,
   ShieldCheck,
   Search,
+  Volume2,
+  Volume1,
+  VolumeX,
+  SkipBack,
+  SkipForward,
+  Lock,
+  Moon,
+  ExternalLink,
+  StickyNote,
 } from 'lucide-react';
 import type {
   ActiveTab,
@@ -26,8 +35,10 @@ import type {
   ChatMessage,
   DownloadJob,
   JarvisSettings,
+  MediaAction,
   PendingApproval,
   ProcessItem,
+  QuickNote,
   RemoteFile,
 } from './types';
 import {
@@ -95,6 +106,8 @@ export default function App() {
   const [processes, setProcesses] = useState<ProcessItem[]>([]);
   const [shutdownMinutes, setShutdownMinutes] = useState(30);
   const [quickScript, setQuickScript] = useState('Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | Select-Object DeviceID, @{N="LibreGB";E={[math]::Round($_.FreeSpace/1GB,1)}}');
+  const [openPcUrl, setOpenPcUrl] = useState('');
+  const [sendingMedia, setSendingMedia] = useState(false);
 
   // Tab 4: File Bridge
   const [fileDir, setFileDir] = useState<'drop' | 'downloads'>('drop');
@@ -102,6 +115,11 @@ export default function App() {
   const [remoteFiles, setRemoteFiles] = useState<RemoteFile[]>([]);
   const [largestFiles, setLargestFiles] = useState<RemoteFile[]>([]);
   const [uploadingFile, setUploadingFile] = useState(false);
+
+  // Tab 5: Quick Notes 24/7
+  const [notes, setNotes] = useState<QuickNote[]>(() => safeLoadJson<QuickNote[]>(STORAGE_KEYS.notes, []));
+  const [noteInput, setNoteInput] = useState('');
+  const [syncingNotes, setSyncingNotes] = useState(false);
 
   const agentBaseUrl = useMemo(() => normalizeAgentUrl(settings.agentUrl), [settings.agentUrl]);
 
@@ -129,6 +147,10 @@ export default function App() {
   useEffect(() => {
     safeSaveJson(STORAGE_KEYS.jobs, jobs.slice(-2000));
   }, [jobs]);
+
+  useEffect(() => {
+    safeSaveJson(STORAGE_KEYS.notes, notes.slice(-500));
+  }, [notes]);
 
   const checkAgentHealth = useCallback(async () => {
     if (!agentBaseUrl) {
@@ -441,23 +463,38 @@ export default function App() {
     });
   };
 
-  const handlePowerAction = (action: 'shutdown' | 'restart' | 'abort') => {
+  const handlePowerAction = (action: 'shutdown' | 'restart' | 'abort' | 'lock' | 'sleep') => {
     const mins = clampShutdownMinutes(shutdownMinutes);
     const cmd =
       action === 'abort'
         ? 'shutdown /a'
-        : `shutdown ${action === 'restart' ? '/r' : '/s'} /t ${mins * 60}`;
+        : action === 'lock'
+          ? 'rundll32.exe user32.dll,LockWorkStation'
+          : action === 'sleep'
+            ? "SetSuspendState('Suspend')"
+            : `shutdown ${action === 'restart' ? '/r' : '/s'} /t ${mins * 60}`;
     setApproval({
       title:
         action === 'abort'
           ? 'Cancelar apagado programado'
-          : action === 'restart'
-            ? `Reiniciar PC en ${mins} minutos`
-            : `Apagar PC en ${mins} minutos`,
+          : action === 'lock'
+            ? 'Bloquear pantalla de Windows'
+            : action === 'sleep'
+              ? 'Suspender tu PC ahora'
+              : action === 'restart'
+                ? `Reiniciar PC en ${mins} minutos`
+                : `Apagar PC en ${mins} minutos`,
       description: 'Acción de energía sobre tu Windows. Requiere TU SÍ.',
       commandPreview: cmd,
-      risk: action === 'abort' ? 'low' : 'high',
-      reasons: action === 'abort' ? ['Cancela cualquier apagado pendiente'] : ['Apagado o reinicio del sistema'],
+      risk: action === 'abort' || action === 'lock' ? 'low' : 'high',
+      reasons:
+        action === 'abort'
+          ? ['Cancela cualquier apagado pendiente']
+          : action === 'lock'
+            ? ['Bloquea la sesión actual (Win + L)']
+            : action === 'sleep'
+              ? ['Suspende el equipo de inmediato']
+              : ['Apagado o reinicio del sistema'],
       onApprove: async () => {
         if (!agentBaseUrl) return;
         const res = await fetch(`${agentBaseUrl}/api/power`, {
@@ -469,6 +506,47 @@ export default function App() {
         showNotice(data.message || (data.ok ? 'Comando enviado.' : 'Error de energía.'));
       },
     });
+  };
+
+  const handleMediaControl = async (action: MediaAction) => {
+    if (!pcOnline || !agentBaseUrl || sendingMedia) return;
+    setSendingMedia(true);
+    try {
+      const res = await fetch(`${agentBaseUrl}/api/media`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json();
+      if (!data.ok) showNotice(data.error || 'No se pudo enviar control multimedia.');
+    } catch {
+      showNotice('Error de red al enviar control multimedia.');
+    } finally {
+      setSendingMedia(false);
+    }
+  };
+
+  const handleOpenUrlOnPc = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const clean = openPcUrl.trim();
+    if (!clean || !pcOnline || !agentBaseUrl) return;
+    const withProto = /^https?:\/\//i.test(clean) ? clean : `https://${clean}`;
+    try {
+      const res = await fetch(`${agentBaseUrl}/api/url/open`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ url: withProto }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setOpenPcUrl('');
+        showNotice(`Abierto en tu PC: ${withProto}`);
+      } else {
+        showNotice(data.error || 'No se pudo abrir la URL.');
+      }
+    } catch {
+      showNotice('Error de red al abrir URL en tu PC.');
+    }
   };
 
   const handleLaunchApp = async (appKey: string) => {
@@ -572,11 +650,65 @@ export default function App() {
     [jobs, visibleJobs],
   );
 
+  // --- Power 5: Quick Notes 24/7 ---
+  const syncPendingNotes = useCallback(
+    async (list: QuickNote[], silent = false) => {
+      const pending = list.filter((n) => !n.synced);
+      if (pending.length === 0 || !pcOnline || !agentBaseUrl) return;
+      setSyncingNotes(true);
+      try {
+        const res = await fetch(`${agentBaseUrl}/api/notes/sync`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ notes: pending }),
+        });
+        const data = await res.json();
+        if (data.ok && Array.isArray(data.syncedIds)) {
+          const syncedSet = new Set<string>(data.syncedIds);
+          setNotes((prev) => prev.map((n) => (syncedSet.has(n.id) ? { ...n, synced: true } : n)));
+          if (!silent) showNotice(`Sincronizadas ${syncedSet.size} nota(s) en JarvisDrop\\jarvis-notas.md`);
+        }
+      } catch {
+        if (!silent) showNotice('No se pudo sincronizar notas con la PC.');
+      } finally {
+        setSyncingNotes(false);
+      }
+    },
+    [pcOnline, agentBaseUrl, authHeaders, showNotice],
+  );
+
+  useEffect(() => {
+    if (pcOnline && notes.some((n) => !n.synced)) {
+      void syncPendingNotes(notes, true);
+    }
+  }, [pcOnline, notes, syncPendingNotes]);
+
+  const handleAddNote = (e: React.FormEvent) => {
+    e.preventDefault();
+    const clean = noteInput.trim();
+    if (!clean) return;
+    const newNote: QuickNote = {
+      id: `n-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      text: clean,
+      createdAt: new Date().toISOString(),
+      synced: false,
+    };
+    const next = [newNote, ...notes].slice(0, 500);
+    setNotes(next);
+    setNoteInput('');
+    showNotice(pcOnline ? 'Nota guardada y sincronizando con PC...' : 'Nota guardada en el celu (se sincroniza al prender la PC).');
+  };
+
+  const handleDeleteNote = (id: string) => {
+    setNotes((prev) => prev.filter((n) => n.id !== id));
+  };
+
   const navItems: Array<{ id: ActiveTab; label: string; Icon: typeof Brain }> = [
     { id: 'brain', label: 'Cerebro', Icon: Brain },
     { id: 'cobalt', label: 'Cobalt', Icon: Download },
     { id: 'pc', label: 'PC', Icon: Monitor },
     { id: 'files', label: 'Archivos', Icon: FolderSync },
+    { id: 'notes', label: 'Notas', Icon: StickyNote },
   ];
 
   return (
@@ -1044,6 +1176,24 @@ export default function App() {
                 <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
+                    disabled={!pcOnline}
+                    onClick={() => handlePowerAction('lock')}
+                    className="inline-flex items-center gap-1 rounded-lg border border-sky-700 bg-sky-950/70 px-3 py-1.5 text-xs font-semibold text-sky-200 hover:bg-sky-900 disabled:opacity-50"
+                  >
+                    <Lock className="h-3.5 w-3.5" aria-hidden="true" />
+                    Bloquear
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!pcOnline}
+                    onClick={() => handlePowerAction('sleep')}
+                    className="inline-flex items-center gap-1 rounded-lg border border-amber-700 bg-amber-950/70 px-3 py-1.5 text-xs font-semibold text-amber-200 hover:bg-amber-900 disabled:opacity-50"
+                  >
+                    <Moon className="h-3.5 w-3.5" aria-hidden="true" />
+                    Suspender
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => handlePowerAction('shutdown')}
                     className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-red-500"
                   >
@@ -1058,6 +1208,105 @@ export default function App() {
                   </button>
                 </div>
               </div>
+            </div>
+
+            {/* Media & Volume + Open URL on PC */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4 space-y-3">
+                <h3 className="text-sm font-bold text-white inline-flex items-center gap-2">
+                  <Volume2 className="h-4 w-4 text-sky-400" aria-hidden="true" />
+                  Multimedia y volumen
+                </h3>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    disabled={!pcOnline || sendingMedia}
+                    onClick={() => void handleMediaControl('vol_down')}
+                    className="inline-flex items-center justify-center gap-1 rounded-xl border border-slate-700 bg-slate-950 py-2.5 text-xs font-semibold text-slate-100 hover:bg-slate-800 disabled:opacity-50"
+                  >
+                    <Volume1 className="h-4 w-4 text-sky-300" aria-hidden="true" />
+                    Vol -
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!pcOnline || sendingMedia}
+                    onClick={() => void handleMediaControl('mute')}
+                    className="inline-flex items-center justify-center gap-1 rounded-xl border border-slate-700 bg-slate-950 py-2.5 text-xs font-semibold text-slate-100 hover:bg-slate-800 disabled:opacity-50"
+                  >
+                    <VolumeX className="h-4 w-4 text-amber-300" aria-hidden="true" />
+                    Mute
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!pcOnline || sendingMedia}
+                    onClick={() => void handleMediaControl('vol_up')}
+                    className="inline-flex items-center justify-center gap-1 rounded-xl border border-slate-700 bg-slate-950 py-2.5 text-xs font-semibold text-slate-100 hover:bg-slate-800 disabled:opacity-50"
+                  >
+                    <Volume2 className="h-4 w-4 text-sky-300" aria-hidden="true" />
+                    Vol +
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!pcOnline || sendingMedia}
+                    onClick={() => void handleMediaControl('prev')}
+                    className="inline-flex items-center justify-center gap-1 rounded-xl border border-slate-700 bg-slate-950 py-2.5 text-xs font-semibold text-slate-100 hover:bg-slate-800 disabled:opacity-50"
+                  >
+                    <SkipBack className="h-4 w-4 text-slate-200" aria-hidden="true" />
+                    Ant.
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!pcOnline || sendingMedia}
+                    onClick={() => void handleMediaControl('play_pause')}
+                    className="inline-flex items-center justify-center gap-1 rounded-xl bg-sky-500 py-2.5 text-xs font-bold text-slate-950 hover:bg-sky-400 disabled:opacity-50"
+                  >
+                    <Play className="h-4 w-4" aria-hidden="true" />
+                    Play
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!pcOnline || sendingMedia}
+                    onClick={() => void handleMediaControl('next')}
+                    className="inline-flex items-center justify-center gap-1 rounded-xl border border-slate-700 bg-slate-950 py-2.5 text-xs font-semibold text-slate-100 hover:bg-slate-800 disabled:opacity-50"
+                  >
+                    <SkipForward className="h-4 w-4 text-slate-200" aria-hidden="true" />
+                    Sig.
+                  </button>
+                </div>
+              </div>
+
+              <form
+                onSubmit={(e) => void handleOpenUrlOnPc(e)}
+                className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4 space-y-3"
+              >
+                <h3 className="text-sm font-bold text-white inline-flex items-center gap-2">
+                  <ExternalLink className="h-4 w-4 text-sky-400" aria-hidden="true" />
+                  Abrir link en tu PC
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Mandá cualquier enlace desde el celu y se abre directo en el navegador de tu Windows.
+                </p>
+                <div className="flex gap-2">
+                  <label htmlFor="open-pc-url" className="sr-only">
+                    URL para abrir en tu PC
+                  </label>
+                  <input
+                    id="open-pc-url"
+                    type="text"
+                    value={openPcUrl}
+                    onChange={(e) => setOpenPcUrl(e.target.value)}
+                    placeholder="https://youtube.com/..."
+                    className="flex-1 min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder:text-slate-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!pcOnline || !openPcUrl.trim()}
+                    className="rounded-lg bg-sky-500 px-3.5 py-2 text-xs font-bold text-slate-950 hover:bg-sky-400 disabled:opacity-50 shrink-0"
+                  >
+                    Abrir
+                  </button>
+                </div>
+              </form>
             </div>
 
             {/* Quick Apps & PowerShell with TU SI */}
@@ -1286,6 +1535,107 @@ export default function App() {
             </div>
           </section>
         )}
+        {/* TAB 5: BUZÓN DE NOTAS 24/7 */}
+        {activeTab === 'notes' && (
+          <section aria-labelledby="tab-notes-heading" className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 id="tab-notes-heading" className="text-lg font-bold text-white">
+                  Buzón de Notas 24/7
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Anotá ideas o links incluso con la PC apagada. Al conectarse, se guardan en{' '}
+                  <code className="rounded bg-slate-900 px-1 py-0.5 text-sky-300">JarvisDrop\jarvis-notas.md</code>.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={!pcOnline || syncingNotes || !notes.some((n) => !n.synced)}
+                onClick={() => void syncPendingNotes(notes, false)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-sky-300 hover:bg-slate-800 disabled:opacity-50"
+              >
+                <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                {syncingNotes ? 'Sincronizando...' : 'Sincronizar ahora'}
+              </button>
+            </div>
+
+            <form
+              onSubmit={handleAddNote}
+              className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4 space-y-3"
+            >
+              <label htmlFor="quick-note-input" className="block text-xs font-semibold text-slate-300">
+                Nueva nota rápida
+              </label>
+              <textarea
+                id="quick-note-input"
+                rows={3}
+                value={noteInput}
+                onChange={(e) => setNoteInput(e.target.value)}
+                placeholder="Escribí una idea, recordatorio o pegá un link..."
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white placeholder:text-slate-500"
+              />
+              <button
+                type="submit"
+                disabled={!noteInput.trim()}
+                className="w-full rounded-xl bg-sky-500 px-4 py-2.5 text-sm font-bold text-slate-950 hover:bg-sky-400 disabled:opacity-50"
+              >
+                Guardar nota
+              </button>
+            </form>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs text-slate-400">
+                <span>Notas guardadas ({notes.length})</span>
+                <span>{notes.filter((n) => !n.synced).length} pendientes de sincronizar</span>
+              </div>
+              {notes.length === 0 ? (
+                <p className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 text-xs text-slate-400">
+                  Todavía no guardaste notas. Todo lo que anotes acá queda en tu celu y se copia a tu PC apenas esté online.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {notes.slice(0, PAGE_SIZE).map((note) => (
+                    <div
+                      key={note.id}
+                      className="rounded-xl border border-slate-800 bg-slate-900/80 p-3 space-y-2"
+                    >
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="text-slate-400">
+                          {new Date(note.createdAt).toLocaleString('es-AR', {
+                            day: '2-digit',
+                            month: '2-digit',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`rounded-full px-2 py-0.5 font-semibold ${
+                              note.synced
+                                ? 'bg-emerald-950 text-emerald-200'
+                                : 'bg-amber-950 text-amber-200'
+                            }`}
+                          >
+                            {note.synced ? 'En PC' : 'Pendiente'}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteNote(note.id)}
+                            aria-label="Borrar nota"
+                            className="text-slate-400 hover:text-red-300"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
+                        </div>
+                      </div>
+                      <p className="text-sm text-slate-100 whitespace-pre-wrap break-words">{note.text}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
       </main>
 
       {/* Bottom Mobile-First Navigation */}
@@ -1293,7 +1643,7 @@ export default function App() {
         aria-label="Secciones principales de Jarvis Pocket"
         className="fixed bottom-0 inset-x-0 z-20 border-t border-slate-800 bg-[#090d16]/95 backdrop-blur"
       >
-        <div className="mx-auto max-w-4xl grid grid-cols-4">
+        <div className="mx-auto max-w-4xl grid grid-cols-5">
           {navItems.map(({ id, label, Icon }) => {
             const active = activeTab === id;
             return (

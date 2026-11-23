@@ -1,4 +1,13 @@
-export type ActiveTab = 'brain' | 'cobalt' | 'pc' | 'files';
+export type ActiveTab = 'brain' | 'cobalt' | 'pc' | 'files' | 'notes';
+
+export type MediaAction = 'vol_down' | 'vol_up' | 'mute' | 'prev' | 'play_pause' | 'next';
+
+export interface QuickNote {
+  id: string;
+  text: string;
+  createdAt: string;
+  synced: boolean;
+}
 
 export type AiProvider = 'offline' | 'gemini' | 'openai-compat';
 

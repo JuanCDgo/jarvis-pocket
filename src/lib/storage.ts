@@ -4,6 +4,7 @@ export const STORAGE_KEYS = {
   settings: 'jarvis_pocket_settings_v1',
   messages: 'jarvis_pocket_messages_v1',
   jobs: 'jarvis_pocket_jobs_v1',
+  notes: 'jarvis_pocket_notes_v1',
 } as const;
 
 export const DEFAULT_SETTINGS: JarvisSettings = {
